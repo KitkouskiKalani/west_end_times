@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A React-based battle encounter game",
   "type": "module",
+  "homepage": "https://yourusername.github.io/west_end",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

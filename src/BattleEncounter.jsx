@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
+// Import images
+import caveClan3 from './assets/3_cave_clan.jpg';
+import caveClan2 from './assets/2_cave_clan.jpg';
+import caveClan1 from './assets/1_cave_clan.jpg';
+import caveClan0 from './assets/0_cave_clan.jpg';
+import heroImage from './assets/hero.png';
+
 // Geometry (apex bottom-center; 0° up; + right; - left)
 const ARC_DEG = 90;
 const MIN_ANGLE = -ARC_DEG / 2; // -45
@@ -110,11 +117,11 @@ const BattleEncounter = () => {
   // Get battle image based on enemy count
   const getBattleImage = () => {
     switch (enemies) {
-      case 3: return "/3_cave_clan.jpg";
-      case 2: return "/2_cave_clan.jpg";
-      case 1: return "/1_cave_clan.jpg";
-      case 0: return "/0_cave_clan.jpg";
-      default: return "/3_cave_clan.jpg";
+      case 3: return caveClan3;
+      case 2: return caveClan2;
+      case 1: return caveClan1;
+      case 0: return caveClan0;
+      default: return caveClan3;
     }
   };
 
@@ -453,7 +460,7 @@ const BattleEncounter = () => {
         {/* Player Avatar */}
         <div className="flex-shrink-0">
           <img
-            src="/hero.png"
+            src={heroImage}
             alt="Player"
             className="w-12 h-12 rounded-full object-cover border-2 border-gray-600"
           />

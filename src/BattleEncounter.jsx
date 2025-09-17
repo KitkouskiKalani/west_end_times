@@ -110,11 +110,11 @@ const BattleEncounter = () => {
   // Get battle image based on enemy count
   const getBattleImage = () => {
     switch (enemies) {
-      case 3: return "3_cave_clan.jpg";
-      case 2: return "2_cave_clan.jpg";
-      case 1: return "1_cave_clan.jpg";
-      case 0: return "0_cave_clan.jpg";
-      default: return "3_cave_clan.jpg";
+      case 3: return "/3_cave_clan.jpg";
+      case 2: return "/2_cave_clan.jpg";
+      case 1: return "/1_cave_clan.jpg";
+      case 0: return "/0_cave_clan.jpg";
+      default: return "/3_cave_clan.jpg";
     }
   };
 
@@ -453,7 +453,7 @@ const BattleEncounter = () => {
         {/* Player Avatar */}
         <div className="flex-shrink-0">
           <img
-            src="hero.png"
+            src="/hero.png"
             alt="Player"
             className="w-12 h-12 rounded-full object-cover border-2 border-gray-600"
           />

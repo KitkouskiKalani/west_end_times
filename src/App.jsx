@@ -1,4 +1,4 @@
-import BattleEncounter from '../BattleEncounter.jsx'
+import BattleEncounter from './BattleEncounter.jsx'
 
 function App() {
   return (

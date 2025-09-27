@@ -8,26 +8,30 @@ import caveClan0 from './assets/0_cave_clan.jpg';
 import heroImage from './assets/hero.png';
 
 // Geometry (apex bottom-center; 0° up; + right; - left)
-const ARC_DEG = 90;
+const ARC_DEG = 90; // Perfect 90° sector
 const MIN_ANGLE = -ARC_DEG / 2; // -45
 const MAX_ANGLE =  ARC_DEG / 2; // +45
 
-const size   = 200;        // radar svg size
+const size   = 540;        // radar svg size (3x larger for better visibility)
 const cx     = size / 2;
-const cy     = size;       // apex
-const radius = size * 0.9;
+const cy     = size * 0.5; // center vertically (not at bottom) - moved up to make radar taller
+const radius = size * 0.5; // outer radius (top arc) - increased for more height
+const bottomRadius = radius * 0.3; // bottom arc (smaller fraction for more height)
+const innerRadius = radius * 0.6; // inner guide arc radius
+const midRadius = radius * 0.8;   // middle guide arc radius
 
 // Calculate the actual bounds needed for the radar
-const leftBound = cx + Math.cos(Math.PI * (90 - (-45)) / 180) * radius;  // -27.28
-const rightBound = cx + Math.cos(Math.PI * (90 - 45) / 180) * radius;    // 227.28
-const topBound = cy - Math.sin(Math.PI * (90 - 0) / 180) * radius;       // 20
+const leftBound = cx + Math.cos(Math.PI * (90 - MIN_ANGLE) / 180) * radius;
+const rightBound = cx + Math.cos(Math.PI * (90 - MAX_ANGLE) / 180) * radius;
+const topBound = cy - Math.sin(Math.PI * (90 - 0) / 180) * radius;
+const bottomBound = cy + Math.sin(Math.PI * (90 - 0) / 180) * bottomRadius;
 
-// Adjust viewBox to include the full radar with some padding
-const padding = 10;
-const viewBoxX = Math.floor(leftBound) - padding;  // -37
-const viewBoxY = Math.floor(topBound) - padding;   // 10
-const viewBoxWidth = Math.ceil(rightBound - leftBound) + 2 * padding;  // 274
-const viewBoxHeight = Math.ceil(cy - topBound) + padding;  // 190
+// Adjust viewBox to start at the actual top of the radar content
+const padding = 5;
+const viewBoxX = Math.floor(leftBound) - padding;
+const viewBoxY = Math.floor(topBound); // Start at the actual top of the radar
+const viewBoxWidth = Math.ceil(rightBound - leftBound) + 2 * padding;
+const viewBoxHeight = Math.ceil(bottomBound - topBound) + padding; // Only add padding at bottom
 
 const deg2rad = (d) => (d * Math.PI) / 180;
 
@@ -39,10 +43,13 @@ function polarToXY(angleDeg, rFrac) {
 
 function wedgePath(startDeg, endDeg) {
   const largeArc = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
-  const left  = polarToXY(startDeg, 1);
-  const right = polarToXY(endDeg, 1);
-  // apex -> left edge -> ARC across TOP (sweep=1) -> back to apex
-  return `M ${cx} ${cy} L ${left.x} ${left.y} A ${radius} ${radius} 0 ${largeArc} 1 ${right.x} ${right.y} Z`;
+  const topLeft = polarToXY(startDeg, 1);
+  const topRight = polarToXY(endDeg, 1);
+  const bottomLeft = polarToXY(startDeg, bottomRadius / radius);
+  const bottomRight = polarToXY(endDeg, bottomRadius / radius);
+  
+  // Create pill-shaped sector: top arc -> right side -> bottom arc -> left side -> close
+  return `M ${topLeft.x} ${topLeft.y} A ${radius} ${radius} 0 ${largeArc} 1 ${topRight.x} ${topRight.y} L ${bottomRight.x} ${bottomRight.y} A ${bottomRadius} ${bottomRadius} 0 ${largeArc} 0 ${bottomLeft.x} ${bottomLeft.y} Z`;
 }
 
 function angleDiff(a, b) {
@@ -50,12 +57,28 @@ function angleDiff(a, b) {
   return d > 180 ? 360 - d : d;
 }
 
+// Helper function to create guide arc path
+function guideArcPath(arcRadius) {
+  const left = polarToXY(MIN_ANGLE, arcRadius / radius);
+  const right = polarToXY(MAX_ANGLE, arcRadius / radius);
+  const largeArc = Math.abs(MAX_ANGLE - MIN_ANGLE) > 180 ? 1 : 0;
+  // Create circular arc with same center (cx, cy) for perfect concentricity
+  return `M ${left.x} ${left.y} A ${arcRadius} ${arcRadius} 0 ${largeArc} 1 ${right.x} ${right.y}`;
+}
+
+// Helper function to create reticle arc path
+function reticleArcPath(currentRadius) {
+  const left = polarToXY(MIN_ANGLE, currentRadius / radius);
+  const right = polarToXY(MAX_ANGLE, currentRadius / radius);
+  const largeArc = Math.abs(MAX_ANGLE - MIN_ANGLE) > 180 ? 1 : 0;
+  return `M ${left.x} ${left.y} A ${currentRadius} ${currentRadius} 0 ${largeArc} 1 ${right.x} ${right.y}`;
+}
+
 const BattleEncounter = () => {
   // Game state
   const [enemies, setEnemies] = useState(3);
   const [health, setHealth] = useState(6);
   const [gameState, setGameState] = useState('playing'); // 'playing', 'victory', 'defeat'
-  const [cursorAngle, setCursorAngle] = useState(MIN_ANGLE);
   const [isAnimating, setIsAnimating] = useState(false);
   const [lastMissTime, setLastMissTime] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
@@ -67,11 +90,12 @@ const BattleEncounter = () => {
   const [animatingEnemies, setAnimatingEnemies] = useState(new Set());
   const [deadEnemies, setDeadEnemies] = useState(new Set());
   const [isTouching, setIsTouching] = useState(false);
+  const [reticleRadius, setReticleRadius] = useState(innerRadius);
+  const [reticleDirection, setReticleDirection] = useState(1);
   
   // Refs
-  const animationRef = useRef();
-  const cursorDirectionRef = useRef(1);
   const lastClickTimeRef = useRef(0);
+  const reticleAnimationRef = useRef();
   
   // Configuration parameters
   const config = {
@@ -79,9 +103,9 @@ const BattleEncounter = () => {
     hitThreshold: 8,
     animationDuration: 300,
     enemyPositions: [
-      { angle: -25, radius: 0.55 },
-      { angle:  10, radius: 0.75 },
-      { angle:  35, radius: 0.45 }
+      { angle: -30, radius: 0.6 },   // Left node on inner guide arc
+      { angle:   0, radius: 0.8 },   // Center node on middle guide arc  
+      { angle:  30, radius: 0.6 }    // Right node on inner guide arc
     ]
   };
   
@@ -126,12 +150,12 @@ const BattleEncounter = () => {
   };
 
   
-  // Check if cursor is near an enemy
-  const isCursorNearEnemy = (enemyAngle) => {
-    const diff = angleDiff(cursorAngle, enemyAngle);
-    const isNear = diff <= config.hitThreshold;
-    console.log(`isCursorNearEnemy: cursor=${cursorAngle}, enemy=${enemyAngle}, diff=${diff}, threshold=${config.hitThreshold}, near=${isNear}`);
-    return isNear;
+  // Check if reticle is near an enemy (simplified for now - can be enhanced later)
+  const isReticleNearEnemy = (enemyAngle, enemyRadius) => {
+    // For now, we'll use a simple radius-based check
+    // The reticle moves from innerRadius to radius, so we check if enemy is in that range
+    const isInRange = enemyRadius >= innerRadius && enemyRadius <= radius;
+    return isInRange;
   };
   
   // Handle enemy kill
@@ -229,17 +253,18 @@ const BattleEncounter = () => {
     
     if (gameState !== 'playing' || isPaused) return;
     
-    console.log('Attack detected, cursor angle:', cursorAngle);
+    console.log('Attack detected, reticle radius:', reticleRadius);
     
-    // Check if cursor is near any live enemy
+    // Check if reticle is near any live enemy
     let hitEnemyIndex = -1;
     for (let i = 0; i < config.enemyPositions.length; i++) {
       // Skip dead enemies
       if (deadEnemies.has(i)) continue;
       
-      const enemyAngle = config.enemyPositions[i].angle;
-      const isNear = isCursorNearEnemy(enemyAngle);
-      console.log(`Enemy ${i}: angle=${enemyAngle}, cursor=${cursorAngle}, near=${isNear}, dead=${deadEnemies.has(i)}`);
+      const enemy = config.enemyPositions[i];
+      const enemyRadius = enemy.radius * radius; // Convert to actual radius
+      const isNear = isReticleNearEnemy(enemy.angle, enemyRadius);
+      console.log(`Enemy ${i}: angle=${enemy.angle}, radius=${enemyRadius}, reticle=${reticleRadius}, near=${isNear}, dead=${deadEnemies.has(i)}`);
       if (isNear) {
         hitEnemyIndex = i;
         break;
@@ -282,7 +307,6 @@ const BattleEncounter = () => {
     setEnemies(3);
     setHealth(6);
     setGameState('playing');
-    setCursorAngle(MIN_ANGLE);
     setIsAnimating(false);
     setLastMissTime(0);
     setIsPaused(false);
@@ -294,30 +318,10 @@ const BattleEncounter = () => {
     setAnimatingEnemies(new Set());
     setDeadEnemies(new Set());
     setIsTouching(false);
-    cursorDirectionRef.current = 1;
+    setReticleRadius(innerRadius);
+    setReticleDirection(1);
   };
   
-  // Cursor animation
-  useEffect(() => {
-    if (gameState !== 'playing' || isPaused) return;
-    const step = () => {
-      setCursorAngle(prev => {
-        let next = prev + cursorDirectionRef.current * config.cursorSpeed;
-        if (next >= MAX_ANGLE) { 
-          next = MAX_ANGLE; 
-          cursorDirectionRef.current = -1;
-        }
-        if (next <= MIN_ANGLE) { 
-          next = MIN_ANGLE; 
-          cursorDirectionRef.current = 1;
-        }
-        return next;
-      });
-      animationRef.current = requestAnimationFrame(step);
-    };
-    animationRef.current = requestAnimationFrame(step);
-    return () => animationRef.current && cancelAnimationFrame(animationRef.current);
-  }, [gameState, isPaused, config.cursorSpeed]);
 
   // Track touching enemies for highlighting only
   useEffect(() => {
@@ -325,25 +329,49 @@ const BattleEncounter = () => {
     
     const currentTouching = new Set();
     
-    // Check which enemies the cursor is currently touching
+    // Check which enemies the reticle is currently touching
     config.enemyPositions.forEach((enemy, i) => {
       // Skip dead enemies
       if (deadEnemies.has(i)) return;
       
-      if (isCursorNearEnemy(enemy.angle)) {
+      const enemyRadius = enemy.radius * radius; // Convert to actual radius
+      if (isReticleNearEnemy(enemy.angle, enemyRadius)) {
         currentTouching.add(i);
       }
     });
     
     // Update currently touching enemies
     setTouchingEnemies(currentTouching);
-  }, [cursorAngle, enemies, gameState, isPaused, deadEnemies]);
+  }, [reticleRadius, enemies, gameState, isPaused, deadEnemies]);
+
+  // Reticle animation
+  useEffect(() => {
+    if (gameState !== 'playing' || isPaused) return;
+    
+    const step = () => {
+      setReticleRadius(prev => {
+        let next = prev + reticleDirection * 0.5;
+        if (next >= radius) {
+          next = radius;
+          setReticleDirection(-1);
+        }
+        if (next <= innerRadius) {
+          next = innerRadius;
+          setReticleDirection(1);
+        }
+        return next;
+      });
+      reticleAnimationRef.current = requestAnimationFrame(step);
+    };
+    reticleAnimationRef.current = requestAnimationFrame(step);
+    return () => reticleAnimationRef.current && cancelAnimationFrame(reticleAnimationRef.current);
+  }, [gameState, isPaused]);
   
   
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 flex flex-col items-center">
       {/* Battle Artwork - Larger Vertical Image */}
-      <div className="mb-4">
+      <div className="mb-0">
         <div 
           className="relative overflow-hidden rounded-lg"
           style={{
@@ -359,8 +387,8 @@ const BattleEncounter = () => {
       </div>
       
       {/* Flavor Text */}
-      <div className="mb-6 text-center max-w-2xl px-4">
-        <p className="text-base font-medium">
+      <div className="mb-0 text-center max-w-2xl px-4 -mt-2">
+        <p className="text-base font-medium leading-none">
           {gameState === 'victory' ? "victory! the area is clear." : 
            gameState === 'defeat' ? "defeat. the cave clan overwhelms you." : 
            getFlavorText()}
@@ -368,10 +396,10 @@ const BattleEncounter = () => {
       </div>
       
        {/* Radar Wedge */}
-       <div className="relative mb-6 w-80 sm:w-96 flex justify-center">
+       <div className="relative mb-0 w-64 sm:w-72 flex justify-center h-auto">
          <svg
-           width={viewBoxWidth}
-           height={viewBoxHeight}
+           width="100%"
+           height="auto"
            viewBox={`${viewBoxX} ${viewBoxY} ${viewBoxWidth} ${viewBoxHeight}`}
            onClick={handleClick}
            onTouchStart={handleTouchStart}
@@ -379,7 +407,7 @@ const BattleEncounter = () => {
            className="cursor-pointer touch-manipulation select-none w-full max-w-sm"
            style={{ touchAction: 'manipulation' }}
          >
-           {/* wedge */}
+           {/* Main pill-shaped sector */}
            <path
              d={wedgePath(MIN_ANGLE, MAX_ANGLE)}
              fill={isTouching ? "#4a4a4a" : "#3f3b38"}
@@ -387,30 +415,33 @@ const BattleEncounter = () => {
              strokeWidth={isTouching ? 3 : 2}
              className="transition-all duration-150"
            />
-           {/* edges */}
-           {(() => {
-             const leftEdge = polarToXY(MIN_ANGLE, 1);
-             const rightEdge = polarToXY(MAX_ANGLE, 1);
-             return (
-               <>
-                 <line
-                   x1={cx} y1={cy}
-                   x2={leftEdge.x} y2={leftEdge.y}
-                   stroke="white"
-                   strokeWidth={isTouching ? 3 : 2}
-                   className="transition-all duration-150"
-                 />
-                 <line
-                   x1={cx} y1={cy}
-                   x2={rightEdge.x} y2={rightEdge.y}
-                   stroke="white"
-                   strokeWidth={isTouching ? 3 : 2}
-                   className="transition-all duration-150"
-                 />
-               </>
-             );
-           })()}
-           {/* enemies */}
+           
+           {/* Guide arcs (concentric circular arcs) */}
+           <path
+             d={guideArcPath(innerRadius)}
+             fill="none"
+             stroke="#666666"
+             strokeWidth="1"
+             opacity="0.3"
+           />
+           <path
+             d={guideArcPath(midRadius)}
+             fill="none"
+             stroke="#666666"
+             strokeWidth="1"
+             opacity="0.3"
+           />
+           
+           {/* Reticle arc (follows circular curvature) */}
+           <path
+             d={reticleArcPath(reticleRadius)}
+             fill="none"
+             stroke="white"
+             strokeWidth="2"
+             opacity="0.8"
+           />
+           
+           {/* Enemy nodes */}
            {config.enemyPositions.map((enemy, i) => {
              // Skip dead enemies unless they're animating
              if (deadEnemies.has(i) && !poppingEnemies.has(i) && !fadingEnemies.has(i)) {
@@ -428,35 +459,51 @@ const BattleEncounter = () => {
                console.log(`Enemy ${i}: popping=${isPopping}, fading=${isFading}, hit=${hit}`);
              }
              
-             let fill = '#6B7280'; 
-             if (isTouching) fill = '#10B981'; 
-             if (hit || isPopping) fill = '#EF4444';
+             let fill = '#9CA3AF'; // Soft gray
+             let stroke = '#6B7280'; // Subtle halo
+             if (isTouching) {
+               fill = '#10B981'; 
+               stroke = '#059669';
+             }
+             if (hit || isPopping) {
+               fill = '#EF4444';
+               stroke = '#DC2626';
+             }
              
              const opacity = isFading ? 0 : 1;
              const scale = isPopping ? 2.0 : 1;
              
              return (
-               <circle 
-                 key={i} 
-                 cx={p.x} 
-                 cy={p.y} 
-                 r={8 * scale} 
-                 fill={fill} 
-                 opacity={opacity}
-                 className={`transition-all duration-300 ${isTouching ? 'animate-pulse' : ''} ${isPopping ? 'animate-ping' : ''}`} 
-               />
+               <g key={i}>
+                 {/* Halo */}
+                 <circle 
+                   cx={p.x} 
+                   cy={p.y} 
+                   r={10 * scale} 
+                   fill="none"
+                   stroke={stroke}
+                   strokeWidth="2"
+                   opacity={opacity * 0.5}
+                   className="transition-all duration-300"
+                 />
+                 {/* Main node */}
+                 <circle 
+                   cx={p.x} 
+                   cy={p.y} 
+                   r={6 * scale} 
+                   fill={fill} 
+                   opacity={opacity}
+                   className={`transition-all duration-300 ${isTouching ? 'animate-pulse' : ''} ${isPopping ? 'animate-ping' : ''}`} 
+                 />
+               </g>
              );
            })}
-           {/* cursor */}
-           {(() => {
-             const p = polarToXY(cursorAngle, 1);
-             return <line x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="white" strokeWidth={2} className="transition-all duration-75" />;
-           })()}
+           
          </svg>
        </div>
       
       {/* Player Info Section - Below Radar */}
-      <div className="flex items-center gap-4 mb-6">
+      <div className="flex items-center gap-4 mb-2">
         {/* Player Avatar */}
         <div className="flex-shrink-0">
           <img

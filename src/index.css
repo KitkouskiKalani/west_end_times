@@ -16,3 +16,16 @@ code {
     monospace;
 }
 
+/* Enhanced glow effects for enemy nodes */
+.enemy-glow {
+  filter: drop-shadow(0 0 8px currentColor);
+}
+
+.enemy-glow-touching {
+  filter: drop-shadow(0 0 12px #10B981) drop-shadow(0 0 24px #10B981);
+}
+
+.enemy-glow-hit {
+  filter: drop-shadow(0 0 12px #EF4444) drop-shadow(0 0 24px #EF4444);
+}
+

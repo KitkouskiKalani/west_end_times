@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 // Import images
-import caveClan3 from './assets/3_cave_clan.jpg';
-import caveClan2 from './assets/2_cave_clan.jpg';
-import caveClan1 from './assets/1_cave_clan.jpg';
-import caveClan0 from './assets/0_cave_clan.jpg';
+import caveClean from './assets/new_cave/cave_clean.jpg';
+import ghoul1 from './assets/new_cave/ghoul1.png';
+import ghoul2 from './assets/new_cave/ghoul2.png';
 import heroImage from './assets/hero.png';
 
 // Geometry (apex bottom-center; 0° up; + right; - left)
@@ -39,6 +38,85 @@ function polarToXY(angleDeg, rFrac) {
   const a = deg2rad(90 - angleDeg);     // SVG y+ is down
   return { x: cx + Math.cos(a) * radius * rFrac,
            y: cy - Math.sin(a) * radius * rFrac };
+}
+
+// Generate symmetrical line targets for plasma blade
+function generatePlasmaLines(numLines = 3) {
+  const lines = [];
+  
+  // First line is always centered at 0° (perfectly vertical)
+  const lineWidth1 = 6 + Math.random() * 6;
+  lines.push({
+    leftAngle: 0,
+    rightAngle: 0,
+    width: lineWidth1,
+    startRadius: bottomRadius / radius,
+    endRadius: 1
+  });
+  
+  // Define zones for the remaining lines (distributed to the sides)
+  const sideZones = [
+    { min: 12, max: 18 },  // Inner zone (closer to center)
+    { min: 24, max: 32 }   // Outer zone
+  ];
+  
+  // Generate remaining lines in the side zones
+  for (let i = 1; i < numLines; i++) {
+    const zone = sideZones[(i - 1) % sideZones.length];
+    const baseAngle = zone.min + Math.random() * (zone.max - zone.min);
+    
+    // Create perfectly symmetrical lines - left is negative, right is positive
+    const leftAngle = -baseAngle;
+    const rightAngle = baseAngle;
+    
+    const lineWidth = 6 + Math.random() * 6;
+    
+    lines.push({
+      leftAngle,
+      rightAngle,
+      width: lineWidth,
+      startRadius: bottomRadius / radius,
+      endRadius: 1
+    });
+  }
+  
+  return lines;
+}
+
+// Generate symmetrical arc targets for Thunder Clap
+// Like plasma blade, each arc is a PAIR (top and bottom) that must both be hit
+function generateThunderArcs() {
+  const arcs = [];
+  const totalRadiusRange = radius - bottomRadius;
+  const centerRadius = bottomRadius + totalRadiusRange * 0.5;
+  
+  // Define zones where arc PAIRS should appear
+  // Each zone defines a position along the convergence path
+  const arcZones = [
+    { position: 0.65 },  // Outer zone: top at 65% (from bottom), bottom mirrors to 35%
+    { position: 0.5 }    // Center zone: top at 50%, bottom also at 50% (they meet)
+  ];
+  
+  // Generate arc pairs at different convergence points (one per zone)
+  arcZones.forEach(zone => {
+    // Add some randomness within the zone (±3%)
+    const randomOffset = (Math.random() - 0.5) * 0.06 * totalRadiusRange;
+    const topPosition = zone.position;
+    const topRadius = bottomRadius + totalRadiusRange * topPosition + randomOffset;
+    
+    // Bottom radius is mirrored around center (perfect symmetry)
+    const bottomRadiusValue = centerRadius - (topRadius - centerRadius);
+    
+    const arcWidth = 6 + Math.random() * 6;
+    
+    arcs.push({
+      topRadius: topRadius,
+      bottomRadius: bottomRadiusValue,
+      width: arcWidth
+    });
+  });
+  
+  return arcs;
 }
 
 // Generate random enemy positions with constraints
@@ -187,10 +265,23 @@ const BattleEncounter = () => {
   const [chain, setChain] = useState([]); // Array of enemy indices in the chain
   const [chainedEnemies, setChainedEnemies] = useState(new Set()); // Set of chained enemy indices
   
+  // Plasma blade states
+  const [plasmaLines, setPlasmaLines] = useState([]); // Array of line targets
+  const [hitLines, setHitLines] = useState(new Set()); // Set of hit line indices
+  const [leftReticleAngle, setLeftReticleAngle] = useState(MIN_ANGLE);
+  const [rightReticleAngle, setRightReticleAngle] = useState(MAX_ANGLE);
+  
+  // Thunder Clap states (converging from top/bottom)
+  const [thunderArcs, setThunderArcs] = useState([]); // Array of arc targets
+  const [hitArcs, setHitArcs] = useState(new Set()); // Set of hit arc indices
+  const [topReticleRadius, setTopReticleRadius] = useState(radius);
+  const [bottomReticleRadius, setBottomReticleRadius] = useState(bottomRadius);
+  
   // Refs
   const lastClickTimeRef = useRef(0);
   const reticleAnimationRef = useRef();
   const reticleDirectionRef = useRef(1);
+  const topReticleRef = useRef(radius); // Track top reticle for perfect mirroring
   
   // Configuration parameters
   const config = {
@@ -205,7 +296,8 @@ const BattleEncounter = () => {
     { name: "plasma arc", image: "🔫", radarType: "moving" },
     { name: "laser rifle", image: "⚡", radarType: "bouncing" },
     { name: "energy cannon", image: "💥", radarType: "chaining" },
-    { name: "plasma blade", image: "⚔️", radarType: "static" }
+    { name: "plasma blade", image: "⚔️", radarType: "static" },
+    { name: "Thunder Clap", image: "🌩️", radarType: "converging" }
   ];
   
   // Flavor text based on enemy count and game state
@@ -237,16 +329,66 @@ const BattleEncounter = () => {
     }
   };
   
-  // Get battle image based on enemy count
-  const getBattleImage = () => {
-    switch (enemies) {
-      case 3: return caveClan3;
-      case 2: return caveClan2;
-      case 1: return caveClan1;
-      case 0: return caveClan0;
-      default: return caveClan3;
-    }
+  // Enemy visual data - positions determined by radar node positions
+  // Map radar nodes to visual enemies based on depth (radius)
+  const getEnemyVisuals = () => {
+    if (enemyPositions.length === 0) return [];
+    
+    // Create array of enemies with their radar positions
+    const enemiesWithPositions = enemyPositions.map((pos, idx) => ({
+      radarIndex: idx,
+      angle: pos.angle,
+      radius: pos.radius
+    }));
+    
+    // Sort by radius (ascending) - lower radius = closer to cone vertex = foreground
+    enemiesWithPositions.sort((a, b) => a.radius - b.radius);
+    
+    // Map sorted enemies to visual representations
+    // Index 0 (lowest radius) = foreground (large)
+    // Index 1 (middle radius) = middle ground (medium)
+    // Index 2 (highest radius) = background (small)
+    
+    return enemiesWithPositions.map((enemy, visualIndex) => {
+      // Map angle (-45 to +45) to horizontal position (20% to 80%)
+      // -45° (left edge) = 20%, 0° (center) = 50%, +45° (right edge) = 80%
+      const leftPercent = 50 + (enemy.angle / 45) * 30;
+      
+      // Map radius (0.4 to 0.9) and visual index to vertical position
+      // Lower index (foreground) = lower on screen (higher percent)
+      // Higher index (background) = higher on screen (lower percent)
+      let topPercent;
+      let size;
+      let image;
+      
+      if (visualIndex === 0) {
+        // Foreground enemy - lowest on screen (60%), largest
+        topPercent = 60;
+        size = 'large';
+        image = ghoul1;
+      } else if (visualIndex === 1) {
+        // Middle ground enemy - middle (45%), medium
+        topPercent = 45;
+        size = 'medium';
+        image = ghoul2;
+      } else {
+        // Background enemy - highest on screen (30%), smallest
+        topPercent = 30;
+        size = 'small';
+        image = ghoul1;
+      }
+      
+      return {
+        image,
+        left: `${leftPercent}%`,
+        top: `${topPercent}%`,
+        index: enemy.radarIndex, // Original radar index for tracking hits
+        size
+      };
+    });
   };
+  
+  const enemyVisuals = getEnemyVisuals();
 
   
   // Check if reticle is near an enemy based on both angle and radius proximity
@@ -434,8 +576,92 @@ const BattleEncounter = () => {
     const currentWeaponData = weapons[currentWeapon];
     console.log('Attack detected, weapon:', currentWeaponData.name, 'radar type:', currentWeaponData.radarType);
     
+    // For plasma blade (static radar), check if reticles are over lines
+    if (currentWeaponData.radarType === 'static') {
+      console.log('Plasma blade - checking line hits');
+      
+      let anyHit = false;
+      const newHitLines = new Set(hitLines);
+      
+      // Check each line to see if either reticle crosses it
+      plasmaLines.forEach((line, i) => {
+        // Skip already hit lines
+        if (hitLines.has(i)) return;
+        
+        const angleThreshold = 3; // degrees of tolerance
+        
+        // Check if left reticle is near the left line
+        const leftLineDiff = Math.abs(leftReticleAngle - line.leftAngle);
+        // Check if right reticle is near the right line
+        const rightLineDiff = Math.abs(rightReticleAngle - line.rightAngle);
+        
+        console.log(`Line ${i}: leftDiff=${leftLineDiff}, rightDiff=${rightLineDiff}, threshold=${angleThreshold}`);
+        
+        // Both reticles must be on their respective lines
+        if (leftLineDiff < angleThreshold && rightLineDiff < angleThreshold) {
+          console.log(`Hit line ${i}!`);
+          newHitLines.add(i);
+          anyHit = true;
+        }
+      });
+      
+      if (anyHit) {
+        setHitLines(newHitLines);
+        
+        // Check if all lines are hit (victory)
+        if (newHitLines.size === plasmaLines.length) {
+          console.log('All lines hit! Victory!');
+          setTimeout(() => setGameState('victory'), 500);
+        }
+      } else {
+        console.log('Miss - no lines hit');
+        handleMiss();
+      }
+    }
+    // For Thunder Clap (converging radar), check if reticles are over arcs
+    else if (currentWeaponData.radarType === 'converging') {
+      console.log('Thunder Clap - checking arc hits');
+      
+      let anyHit = false;
+      const newHitArcs = new Set(hitArcs);
+      
+      // Check each arc pair - BOTH reticles must be on their respective arcs (like plasma blade)
+      thunderArcs.forEach((arc, i) => {
+        // Skip already hit arcs
+        if (hitArcs.has(i)) return;
+        
+        const radiusThreshold = 15; // pixels of tolerance
+        
+        // Check if top reticle is near the top arc
+        const topArcDiff = Math.abs(topReticleRadius - arc.topRadius);
+        // Check if bottom reticle is near the bottom arc
+        const bottomArcDiff = Math.abs(bottomReticleRadius - arc.bottomRadius);
+        
+        console.log(`Arc ${i}: topDiff=${topArcDiff.toFixed(1)}, bottomDiff=${bottomArcDiff.toFixed(1)}, threshold=${radiusThreshold}, topRet=${topReticleRadius.toFixed(1)}, botRet=${bottomReticleRadius.toFixed(1)}, arcTop=${arc.topRadius.toFixed(1)}, arcBot=${arc.bottomRadius.toFixed(1)}`);
+        
+        // Both reticles must be on their respective arcs (like plasma blade)
+        if (topArcDiff < radiusThreshold && bottomArcDiff < radiusThreshold) {
+          console.log(`Hit arc ${i}!`);
+          newHitArcs.add(i);
+          anyHit = true;
+        }
+      });
+      
+      if (anyHit) {
+        setHitArcs(newHitArcs);
+        
+        // Check if all arcs are hit (victory)
+        if (newHitArcs.size === thunderArcs.length) {
+          console.log('All arcs hit! Victory!');
+          setTimeout(() => setGameState('victory'), 500);
+        }
+      } else {
+        console.log('Miss - no arcs hit');
+        handleMiss();
+      }
+    }
     // For moving radar weapons (plasma arc), bouncing radar weapons (laser rifle), and chaining radar weapons (energy cannon), check reticle position
-    if (currentWeaponData.radarType === 'moving' || currentWeaponData.radarType === 'bouncing' || currentWeaponData.radarType === 'chaining') {
+    else if (currentWeaponData.radarType === 'moving' || currentWeaponData.radarType === 'bouncing' || currentWeaponData.radarType === 'chaining') {
       console.log('Moving radar - checking reticle position, radius:', reticleRadius);
       
       // Check if reticle is near any live enemy
@@ -474,9 +700,6 @@ const BattleEncounter = () => {
           handleMiss();
         }
       }
-    } else {
-      // For static radar weapons, no attack functionality yet
-      console.log('Static radar weapon - attack not implemented yet');
     }
   };
 
@@ -531,6 +754,16 @@ const BattleEncounter = () => {
     setChainedEnemies(new Set());
     // Generate new random enemy positions
     setEnemyPositions(generateRandomEnemyPositions(3));
+    // Reset plasma blade
+    setPlasmaLines(generatePlasmaLines(3));
+    setHitLines(new Set());
+    setLeftReticleAngle(MIN_ANGLE);
+    setRightReticleAngle(MAX_ANGLE);
+    // Reset Thunder Clap
+    setThunderArcs(generateThunderArcs());
+    setHitArcs(new Set());
+    setTopReticleRadius(radius);
+    setBottomReticleRadius(bottomRadius);
   };
   
 
@@ -552,6 +785,23 @@ const BattleEncounter = () => {
     reticleDirectionRef.current = 1;
     setChain([]);
     setChainedEnemies(new Set());
+    
+    // Initialize plasma blade when switching to it
+    if (weapons[currentWeapon].radarType === 'static') {
+      setPlasmaLines(generatePlasmaLines(3));
+      setHitLines(new Set());
+      setLeftReticleAngle(MIN_ANGLE);
+      setRightReticleAngle(MAX_ANGLE);
+    }
+    
+    // Initialize Thunder Clap when switching to it
+    if (weapons[currentWeapon].radarType === 'converging') {
+      setThunderArcs(generateThunderArcs());
+      setHitArcs(new Set());
+      setTopReticleRadius(radius);
+      setBottomReticleRadius(bottomRadius);
+      topReticleRef.current = radius; // Sync the ref
+    }
   }, [currentWeapon]);
 
   // Track touching enemies for highlighting only
@@ -577,6 +827,74 @@ const BattleEncounter = () => {
     // Update currently touching enemies
     setTouchingEnemies(currentTouching);
   }, [reticleRadius, enemies, gameState, isPaused, deadEnemies, currentWeapon, enemyPositions]);
+
+  // Plasma blade dual reticle animation
+  useEffect(() => {
+    const shouldAnimate = gameState === 'playing' && !isPaused;
+    const currentWeaponData = weapons[currentWeapon];
+    
+    if (!shouldAnimate || currentWeaponData.radarType !== 'static') return;
+    
+    const angleSpeed = 0.15; // Speed of reticle movement in degrees (much slower for precision)
+    
+    const step = () => {
+      setLeftReticleAngle(prev => {
+        let next = prev + angleSpeed;
+        // When left reticle reaches center (0°), reset to left edge
+        if (next >= 0) {
+          next = MIN_ANGLE;
+        }
+        return next;
+      });
+      
+      setRightReticleAngle(prev => {
+        let next = prev - angleSpeed;
+        // When right reticle reaches center (0°), reset to right edge
+        if (next <= 0) {
+          next = MAX_ANGLE;
+        }
+        return next;
+      });
+      
+      reticleAnimationRef.current = requestAnimationFrame(step);
+    };
+    
+    reticleAnimationRef.current = requestAnimationFrame(step);
+    return () => reticleAnimationRef.current && cancelAnimationFrame(reticleAnimationRef.current);
+  }, [gameState, isPaused, currentWeapon]);
+
+  // Thunder Clap converging reticle animation (top/bottom)
+  // The reticles are perfectly mirrored - they sweep together from outer to center
+  useEffect(() => {
+    const shouldAnimate = gameState === 'playing' && !isPaused;
+    const currentWeaponData = weapons[currentWeapon];
+    
+    if (!shouldAnimate || currentWeaponData.radarType !== 'converging') return;
+    
+    const radiusSpeed = 0.6; // Speed of reticle movement in pixels
+    const centerRadius = bottomRadius + (radius - bottomRadius) * 0.5;
+    
+    const step = () => {
+      // Update top reticle position
+      topReticleRef.current -= radiusSpeed;
+      if (topReticleRef.current <= centerRadius) {
+        topReticleRef.current = radius;
+      }
+      
+      // Calculate bottom reticle as perfect mirror
+      const topDistanceFromCenter = topReticleRef.current - centerRadius;
+      const bottomMirrored = centerRadius - topDistanceFromCenter;
+      
+      // Update both states with synchronized values
+      setTopReticleRadius(topReticleRef.current);
+      setBottomReticleRadius(bottomMirrored);
+      
+      reticleAnimationRef.current = requestAnimationFrame(step);
+    };
+    
+    reticleAnimationRef.current = requestAnimationFrame(step);
+    return () => reticleAnimationRef.current && cancelAnimationFrame(reticleAnimationRef.current);
+  }, [gameState, isPaused, currentWeapon]);
 
   // Reticle animation - for weapons with moving radar (plasma arc) and bouncing radar (laser rifle)
   useEffect(() => {
@@ -645,7 +963,7 @@ const BattleEncounter = () => {
   
   return (
     <div className="min-h-screen bg-gray-950 text-white p-2 flex flex-col items-center">
-      {/* Battle Artwork - Larger Vertical Image */}
+      {/* Battle Artwork - Static Background with Dynamic Enemies */}
       <div className="mb-0">
         <div 
           className="relative overflow-hidden rounded-lg border border-white"
@@ -653,11 +971,52 @@ const BattleEncounter = () => {
             filter: hitFeedback?.type === 'miss' ? 'brightness(2) saturate(0)' : 'none'
           }}
         >
+          {/* Static background */}
           <img
-            src={getBattleImage()}
-            alt="Battle scene"
+            src={caveClean}
+            alt="Cave background"
             className="w-96 h-96 sm:w-[28rem] sm:h-[28rem] object-cover"
           />
+          
+          {/* Dynamic enemy overlays */}
+          {enemyVisuals.map((enemy) => {
+            const isDead = deadEnemies.has(enemy.index);
+            const isPopping = poppingEnemies.has(enemy.index);
+            const isFading = fadingEnemies.has(enemy.index);
+            
+            // Don't render if dead and not animating
+            if (isDead && !isPopping && !isFading) {
+              return null;
+            }
+            
+            // Determine size classes based on depth
+            let sizeClasses;
+            if (enemy.size === 'large') {
+              sizeClasses = 'w-64 h-64 sm:w-72 sm:h-72'; // Foreground - largest
+            } else if (enemy.size === 'medium') {
+              sizeClasses = 'w-44 h-44 sm:w-52 sm:h-52'; // Middle ground - medium
+            } else {
+              sizeClasses = 'w-32 h-32 sm:w-36 sm:h-36'; // Background - smallest
+            }
+            
+            return (
+              <img
+                key={enemy.index}
+                src={enemy.image}
+                alt={`Enemy ${enemy.index}`}
+                className={`absolute ${sizeClasses} object-contain transition-all duration-300`}
+                style={{
+                  left: enemy.left,
+                  top: enemy.top,
+                  transform: `translate(-50%, -50%) ${isPopping ? 'scale(1.5)' : 'scale(1)'}`,
+                  opacity: isFading ? 0 : 1,
+                  transition: 'transform 0.6s ease, opacity 0.8s ease',
+                  zIndex: enemy.size === 'large' ? 3 : enemy.size === 'medium' ? 2 : 1,
+                }}
+              />
+            );
+          })}
+          
           {/* Gradient overlay for bottom transparency */}
           <div className="absolute bottom-0 left-0 right-0 h-20 bg-gradient-to-t from-gray-950 to-transparent"></div>
         </div>
@@ -709,16 +1068,141 @@ const BattleEncounter = () => {
              opacity="0.3"
            />
            
-           {/* Reticle arc (follows circular curvature) */}
-           <path
-             d={reticleArcPath(reticleRadius)}
-             fill="none"
-             stroke="white"
-             strokeWidth="2"
-             opacity="0.8"
-           />
-           
-           {/* Chain lines for energy cannon */}
+          {/* Reticle arc (follows circular curvature) - only for moving/bouncing/chaining weapons */}
+          {weapons[currentWeapon].radarType !== 'static' && weapons[currentWeapon].radarType !== 'converging' && (
+            <path
+              d={reticleArcPath(reticleRadius)}
+              fill="none"
+              stroke="white"
+              strokeWidth="2"
+              opacity="0.8"
+            />
+          )}
+          
+          {/* Plasma blade lines and dual reticles */}
+          {weapons[currentWeapon].radarType === 'static' && plasmaLines.map((line, i) => {
+            const isHit = hitLines.has(i);
+            const lineColor = isHit ? '#FF8C00' : '#9CA3AF'; // Orange when hit, gray otherwise
+            
+            // Left line - spans full height from bottom to top
+            const leftStart = polarToXY(line.leftAngle, line.startRadius);
+            const leftEnd = polarToXY(line.leftAngle, line.endRadius);
+            
+            // Right line - spans full height from bottom to top
+            const rightStart = polarToXY(line.rightAngle, line.startRadius);
+            const rightEnd = polarToXY(line.rightAngle, line.endRadius);
+            
+            return (
+              <g key={`line-${i}`}>
+                {/* Left line */}
+                <line
+                  x1={leftStart.x}
+                  y1={leftStart.y}
+                  x2={leftEnd.x}
+                  y2={leftEnd.y}
+                  stroke={lineColor}
+                  strokeWidth={line.width}
+                  opacity={isHit ? 1 : 0.6}
+                  className="transition-all duration-300"
+                />
+                {/* Right line */}
+                <line
+                  x1={rightStart.x}
+                  y1={rightStart.y}
+                  x2={rightEnd.x}
+                  y2={rightEnd.y}
+                  stroke={lineColor}
+                  strokeWidth={line.width}
+                  opacity={isHit ? 1 : 0.6}
+                  className="transition-all duration-300"
+                />
+              </g>
+            );
+          })}
+          
+          {/* Plasma blade dual reticles - vertical lines spanning full height */}
+          {weapons[currentWeapon].radarType === 'static' && (
+            <>
+              {/* Left reticle */}
+              <line
+                x1={polarToXY(leftReticleAngle, bottomRadius / radius).x}
+                y1={polarToXY(leftReticleAngle, bottomRadius / radius).y}
+                x2={polarToXY(leftReticleAngle, 1).x}
+                y2={polarToXY(leftReticleAngle, 1).y}
+                stroke="white"
+                strokeWidth="2"
+                opacity="0.8"
+              />
+              {/* Right reticle */}
+              <line
+                x1={polarToXY(rightReticleAngle, bottomRadius / radius).x}
+                y1={polarToXY(rightReticleAngle, bottomRadius / radius).y}
+                x2={polarToXY(rightReticleAngle, 1).x}
+                y2={polarToXY(rightReticleAngle, 1).y}
+                stroke="white"
+                strokeWidth="2"
+                opacity="0.8"
+              />
+            </>
+          )}
+          
+          {/* Thunder Clap arcs and dual reticles */}
+          {weapons[currentWeapon].radarType === 'converging' && thunderArcs.map((arc, i) => {
+            const isHit = hitArcs.has(i);
+            const arcColor = isHit ? '#FF8C00' : '#A78BFA'; // Orange when hit, purple otherwise
+            
+            // Only draw unique radii (skip bottom if it's the same as top)
+            const drawBothArcs = Math.abs(arc.topRadius - arc.bottomRadius) > 5; // 5px threshold for "different"
+            
+            return (
+              <g key={`arc-${i}`}>
+                {/* Top arc path */}
+                <path
+                  d={reticleArcPath(arc.topRadius)}
+                  fill="none"
+                  stroke={arcColor}
+                  strokeWidth={arc.width}
+                  opacity={isHit ? 1 : 0.6}
+                  className="transition-all duration-300"
+                />
+                {/* Bottom arc path - only if different from top */}
+                {drawBothArcs && (
+                  <path
+                    d={reticleArcPath(arc.bottomRadius)}
+                    fill="none"
+                    stroke={arcColor}
+                    strokeWidth={arc.width}
+                    opacity={isHit ? 1 : 0.6}
+                    className="transition-all duration-300"
+                  />
+                )}
+              </g>
+            );
+          })}
+          
+          {/* Thunder Clap dual reticles - horizontal arcs */}
+          {weapons[currentWeapon].radarType === 'converging' && (
+            <>
+              {/* Top reticle */}
+              <path
+                d={reticleArcPath(topReticleRadius)}
+                fill="none"
+                stroke="#10B981"
+                strokeWidth="3"
+                opacity="0.9"
+              />
+              {/* Bottom reticle */}
+              <path
+                d={reticleArcPath(bottomReticleRadius)}
+                fill="none"
+                stroke="#10B981"
+                strokeWidth="3"
+                opacity="0.9"
+              />
+            </>
+          )}
+          
+          {/* Chain lines for energy cannon */}
            {chain.length > 1 && weapons[currentWeapon].radarType === 'chaining' && chain.map((enemyIndex, i) => {
              if (i === 0) return null; // Skip first element
              const prevEnemy = enemyPositions[chain[i - 1]];
@@ -744,12 +1228,12 @@ const BattleEncounter = () => {
              );
            })}
            
-           {/* Enemy nodes */}
-           {enemyPositions.map((enemy, i) => {
-             // Skip dead enemies unless they're animating
-             if (deadEnemies.has(i) && !poppingEnemies.has(i) && !fadingEnemies.has(i)) {
-               return null;
-             }
+          {/* Enemy nodes - only for non-static and non-converging weapons */}
+          {weapons[currentWeapon].radarType !== 'static' && weapons[currentWeapon].radarType !== 'converging' && enemyPositions.map((enemy, i) => {
+            // Skip dead enemies unless they're animating
+            if (deadEnemies.has(i) && !poppingEnemies.has(i) && !fadingEnemies.has(i)) {
+              return null;
+            }
              
              const p = polarToXY(enemy.angle, enemy.radius);
              const isTouching = touchingEnemies.has(i);
